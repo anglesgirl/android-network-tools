@@ -6,26 +6,54 @@ on:
       - 'zh-*'
   workflow_dispatch:
 
+permissions:
+  contents: write   # tag 构建时自动建中文测试版 pre-release 需要
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-          
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-          
+
+      # GitHub runner 自带 Android SDK（$ANDROID_HOME），不再用
+      # android-actions/setup-android@v3 —— 它会安装 Google 早已删除的 "tools" 包，
+      # 导致 2026-10-09 的 build 18 秒速死。上游 ci.yml 同样只用 setup-java，
+      # 走同一份预装 SDK（ci.yml 里 :app:assembleDebug 就是这么编出来的）。
+      - name: Verify Android SDK (preinstalled on runner)
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platform-tools" || { echo "::error::Android SDK not found on runner"; exit 1; }
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
       - name: Build Debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
-        
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: NetSwissKnife-zh-debug
           path: app/build/outputs/apk/debug/*.apk
+
+      # 只有 zh-* tag 触发时建 pre-release，交付走 gh-proxy 镜像直链。
+      # workflow_dispatch 手动触发不建 release（只留 artifact）。
+      # 如不想动 Releases 页，删掉整个 step 即可，构建不受影响。
+      - name: Create pre-release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/zh-')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          gh release create "$TAG" "$APK" \
+            --prerelease \
+            --title "中文测试版 $TAG" \
+            --notes "NetSwissKnife 中文翻译测试构建（debug 签名）。正式 release 请走 release.yml。"
