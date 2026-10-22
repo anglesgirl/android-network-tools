@@ -67,11 +67,30 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon --no-parallel
 
+  # Job-level `if` cannot reference the `secrets` context (workflow fails to
+  # start), so detect the optional Firebase secret in a tiny gate job first.
+  check-firebase-secret:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      has_key: ${{ steps.check.outputs.has_key }}
+    steps:
+      - id: check
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          if [ -n "$FIREBASE_KEY" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
   instrumented-tests:
     # Firebase Test Lab is quota-limited on the free tier. Keep cloud device
     # runs for pushes to main; pull requests retain the local build/test gates.
     # Forks without the Firebase service-account secret skip this job instead of failing.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.FIREBASE_SERVICE_ACCOUNT_KEY != ''
+    needs: check-firebase-secret
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-firebase-secret.outputs.has_key == 'true'
     runs-on: ubuntu-latest
     # Runs on Firebase Test Lab instead of a GitHub-hosted emulator. The
     # reactivecircus/android-emulator-runner + local KVM/nested-virtualization
